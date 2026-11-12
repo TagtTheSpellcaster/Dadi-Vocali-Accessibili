@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Dadi Vocali Accessibili v1.0.0</title>
+  
+  <!-- Configurazione PWA -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#000000">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Dadi Vocali">
+  <link rel="apple-touch-icon" href="icon-192.png">
+
+  <style>
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background-color: #000000;
+      color: #ffffff;
+      font-family: system-ui, -apple-system, sans-serif;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    #touchZone {
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      text-align: center;
+      box-sizing: border-box;
+      padding: 24px;
+      touch-action: manipulation;
+    }
+
+    #touchZone:active {
+      background-color: #141414;
+    }
+
+    .formula-badge {
+      font-size: 1.5rem;
+      font-weight: 600;
+      color: #00ffcc;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      margin-bottom: 24px;
+      background-color: rgba(0, 255, 204, 0.1);
+      padding: 10px 24px;
+      border-radius: 20px;
+      border: 1px solid #00ffcc;
+      min-height: 1.8rem;
+    }
+
+    .result-main {
+      font-size: 4.5rem;
+      font-weight: 800;
+      line-height: 1.1;
+      margin-bottom: 16px;
+      color: #ffffff;
+    }
+
+    .result-detail {
+      font-size: 2rem;
+      font-weight: 600;
+      color: #ffd700;
+      margin-bottom: 24px;
+      min-height: 2.4rem;
+    }
+
+    .status-hint {
+      font-size: 1.4rem;
+      color: #aaaaaa;
+    }
+  </style>
+</head>
+<body>
+
+<div id="touchZone" role="button" tabindex="0" aria-label="Dadi Vocali Accessibili. Tocca per lanciare i dadi">
+  <div class="formula-badge" id="formulaDisplay">DADI VOCALI ACCESSIBILI</div>
+  <div class="result-main" id="mainResult">TOCCA LO SCHERMO</div>
+  <div class="result-detail" id="detailResult"></div>
+  <div class="status-hint" id="statusHint">Un tocco per parlare • Doppio tocco per ripetere</div>
+</div>
+
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js').catch(err => console.error(err));
+    });
+  }
+
+  const touchZone = document.getElementById('touchZone');
+  const formulaDisplay = document.getElementById('formulaDisplay');
+  const mainResult = document.getElementById('mainResult');
+  const detailResult = document.getElementById('detailResult');
+  const statusHint = document.getElementById('statusHint');
+
+  let isSpeaking = false;
+  let isListening = false;
+  let lastCommand = null;
+  let lastRollTimestamp = 0;
+  let voceItaliana = null;
+
+  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let recognition = null;
+
+  if (SpeechRecognition) {
+    recognition = new SpeechRecognition();
+    recognition.lang = 'it-IT';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 3;
+  }
+
+  function scegliVoceItaliana() {
+    if (!("speechSynthesis" in window)) return;
+    const voci = window.speechSynthesis.getVoices();
+    if (!voci || voci.length === 0) return;
+
+    const italiane = voci.filter(v => v.lang && v.lang.toLowerCase().startsWith("it"));
+    if (italiane.length === 0) return;
+
+    const preferite = [
+      /\belsa\b/i,
+      /\b(alice|federica|paola|lucia|carla|sofia|elisa|silvia|serena)\b/i,
+      /female|donna|femminile/i
+    ];
+
+    for (const pattern of preferite) {
+      const trovata = italiane.find(v => pattern.test(v.name));
+      if (trovata) {
+        voceItaliana = trovata;
+        return;
+      }
+    }
+    voceItaliana = italiane[0];
+  }
+
+  if ("speechSynthesis" in window) {
+    scegliVoceItaliana();
+    window.speechSynthesis.onvoiceschanged = scegliVoceItaliana;
+  }
+
+  function parla(testo, onComplete = null) {
+    if (!("speechSynthesis" in window)) {
+      if (onComplete) onComplete();
+      return;
+    }
+
+    isSpeaking = true;
+    if (recognition && isListening) {
+      try { recognition.abort(); } catch (e) {}
+    }
+
+    scegliVoceItaliana();
+    window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(testo);
+    utterance.lang = "it-IT";
+    if (voceItaliana) utterance.voice = voceItaliana;
+    utterance.rate = 0.98;
+    utterance.pitch = 1.05;
+
+    utterance.onstart = () => {
+      isSpeaking = true;
+    };
+
+    utterance.onend = () => {
+      setTimeout(() => {
+        isSpeaking = false;
+        if (onComplete) onComplete();
+      }, 250);
+    };
+
+    utterance.onerror = () => {
+      isSpeaking = false;
+      if (onComplete) onComplete();
+    };
+
+    window.speechSynthesis.speak(utterance);
+  }
+
+  function normalizzaTesto(raw) {
+    let s = raw.toLowerCase().trim();
+
+    const numeriParole = {
+      "zero": "0", "un": "1", "uno": "1", "una": "1",
+      "due": "2", "tre": "3", "quattro": "4", "cinque": "5",
+      "sei": "6", "sette": "7", "otto": "8", "nove": "9",
+      "dieci": "10", "undici": "11", "dodici": "12", "venti": "20", "cento": "100"
+    };
+
+    for (const [parola, cifra] of Object.entries(numeriParole)) {
+      const regex = new RegExp(`\\b${parola}\\b`, 'g');
+      s = s.replace(regex, cifra);
+    }
+
+    s = s.replace(/\b(di|ti|d)\s*(4|6|8|10|12|20|100)\b/g, 'd$2');
+    s = s.replace(/\bpiù\b/g, '+');
+    s = s.replace(/\bmeno\b/g, '-');
+
+    return s;
+  }
+
+  function analizzaComando(trascrizione) {
+    const testo = normalizzaTesto(trascrizione);
+
+    if (testo.includes("testa") || testo.includes("croce") || testo.includes("moneta")) {
+      return { tipo: "moneta", formula: "Testa o Croce" };
+    }
+
+    let modalitaVantaggio = null;
+    if (testo.includes("svantaggio")) {
+      modalitaVantaggio = "svantaggio";
+    } else if (testo.includes("vantaggio")) {
+      modalitaVantaggio = "vantaggio";
+    }
+
+    const match = testo.match(/(\d*)\s*d(4|6|8|10|12|20|100)(?:\s*([+-])\s*(\d+))?/);
+
+    if (!match) {
+      return null;
+    }
+
+    let numDadi = match[1] ? parseInt(match[1], 10) : 1;
+    const facce = parseInt(match[2], 10);
+    const segno = match[3] || null;
+    const valMod = match[4] ? parseInt(match[4], 10) : 0;
+    const modificatore = segno === '-' ? -valMod : valMod;
+
+    if (numDadi < 1) numDadi = 1;
+    if (numDadi > 100) numDadi = 100;
+
+    if (facce === 20 && modalitaVantaggio && numDadi === 1) {
+      numDadi = 2;
+    }
+
+    let strFormula = `${numDadi}d${facce}`;
+    if (modificatore > 0) strFormula += `+${modificatore}`;
+    if (modificatore < 0) strFormula += `${modificatore}`;
+    if (modalitaVantaggio) strFormula += ` (${modalitaVantaggio})`;
+
+    return {
+      tipo: "dadi",
+      numDadi,
+      facce,
+      modificatore,
+      vantaggio: (facce === 20 && numDadi === 2) ? modalitaVantaggio : null,
+      formula: strFormula
+    };
+  }
+
+  function lanciaDado(facce) {
+    return Math.floor(Math.random() * facce) + 1;
+  }
+
+  function eseguiLancio(comando) {
+    lastCommand = comando;
+    formulaDisplay.textContent = comando.formula;
+
+    if (comando.tipo === "moneta") {
+      const esito = Math.random() < 0.5 ? "Testa" : "Croce";
+      mainResult.textContent = esito.toUpperCase();
+      detailResult.textContent = "";
+      statusHint.textContent = "Tocca per un nuovo lancio";
+      parla(esito);
+      return;
+    }
+
+    if (comando.vantaggio) {
+      const tiro1 = lanciaDado(20);
+      const tiro2 = lanciaDado(20);
+      const scelto = comando.vantaggio === "vantaggio"
+        ? Math.max(tiro1, tiro2)
+        : Math.min(tiro1, tiro2);
+
+      const totale = scelto + comando.modificatore;
+
+      mainResult.textContent = `${tiro1} e ${tiro2}`;
+      if (comando.modificatore !== 0) {
+        const modStr = comando.modificatore > 0 ? `+${comando.modificatore}` : `${comando.modificatore}`;
+        detailResult.textContent = `con ${comando.vantaggio}: ${scelto} (${modStr} = ${totale})`;
+        parla(`${tiro1} e ${tiro2}. Con ${comando.vantaggio}: ${scelto}, totale ${totale}`);
+      } else {
+        detailResult.textContent = `con ${comando.vantaggio}: ${scelto}`;
+        parla(`${tiro1} e ${tiro2}. Con ${comando.vantaggio}: ${scelto}`);
+      }
+      statusHint.textContent = "Tocca per un nuovo lancio";
+      return;
+    }
+
+    const tiri = [];
+    let sommaDadi = 0;
+    for (let i = 0; i < comando.numDadi; i++) {
+      const val = lanciaDado(comando.facce);
+      tiri.push(val);
+      sommaDadi += val;
+    }
+
+    const totale = sommaDadi + comando.modificatore;
+    mainResult.textContent = totale;
+
+    if (comando.numDadi > 1 || comando.modificatore !== 0) {
+      let dettaglio = `[${tiri.join(", ")}]`;
+      if (comando.modificatore > 0) dettaglio += ` + ${comando.modificatore}`;
+      if (comando.modificatore < 0) dettaglio += ` - ${Math.abs(comando.modificatore)}`;
+      detailResult.textContent = dettaglio;
+    } else {
+      detailResult.textContent = "";
+    }
+
+    statusHint.textContent = "Tocca per un nuovo lancio";
+    parla(`${totale}`);
+  }
+
+  function avviaAscolto() {
+    if (!recognition) {
+      mainResult.textContent = "NON SUPPORTATO";
+      detailResult.textContent = "Usa Chrome o Edge";
+      parla("Riconoscimento vocale non supportato da questo browser.");
+      return;
+    }
+
+    if (isSpeaking || isListening) return;
+
+    formulaDisplay.textContent = "IN ASCOLTO...";
+    statusHint.textContent = "Pronuncia il lancio (es. 1d20, 2d6+5, testa o croce)";
+
+    try {
+      recognition.start();
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  if (recognition) {
+    recognition.onstart = () => {
+      isListening = true;
+    };
+
+    recognition.onresult = (event) => {
+      isListening = false;
+
+      // Evita che un eventuale secondo evento ravvicinato sullo stesso turno rilanci i dadi
+      const now = Date.now();
+      if (now - lastRollTimestamp < 1200) return;
+
+      let comandoValido = null;
+
+      for (let i = 0; i < event.results[0].length; i++) {
+        const trascrizione = event.results[0][i].transcript;
+        comandoValido = analizzaComando(trascrizione);
+        if (comandoValido) break;
+      }
+
+      if (comandoValido) {
+        lastRollTimestamp = now;
+        eseguiLancio(comandoValido);
+      } else {
+        const udito = event.results[0][0].transcript;
+        formulaDisplay.textContent = "NON COMPRESO";
+        mainResult.textContent = "?";
+        detailResult.textContent = `"${udito}"`;
+        statusHint.textContent = "Tocca lo schermo e riprova";
+        parla("Comando non riconosciuto. Riprova.");
+      }
+    };
+
+    recognition.onerror = (event) => {
+      isListening = false;
+      if (event.error === 'no-speech') {
+        formulaDisplay.textContent = "NESSUN AUDIO";
+        statusHint.textContent = "Tocca lo schermo per parlare";
+        parla("Nessun comando rilevato.");
+      } else if (event.error !== 'aborted') {
+        formulaDisplay.textContent = "ERRORE MICROFONO";
+        statusHint.textContent = event.error;
+      }
+    };
+
+    recognition.onend = () => {
+      isListening = false;
+    };
+  }
+
+  let clickTimer = null;
+
+  function gestisciInterazione() {
+    if (isSpeaking) return;
+
+    if (clickTimer === null) {
+      clickTimer = setTimeout(() => {
+        clickTimer = null;
+        parla("Lancia i dadi", () => {
+          avviaAscolto();
+        });
+      }, 260);
+    } else {
+      clearTimeout(clickTimer);
+      clickTimer = null;
+      if (lastCommand) {
+        eseguiLancio(lastCommand);
+      } else {
+        parla("Nessun lancio precedente");
+      }
+    }
+  }
+
+  touchZone.addEventListener('click', (e) => {
+    e.preventDefault();
+    gestisciInterazione();
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.key === ' ' || e.key === 'Enter') {
+      e.preventDefault();
+      if (!isSpeaking && !isListening) {
+        parla("Lancia i dadi", () => {
+          avviaAscolto();
+        });
+      }
+    } else if (e.key.toLowerCase() === 'r' && lastCommand && !isSpeaking) {
+      eseguiLancio(lastCommand);
+    }
+  });
+</script>
+
+</body>
+</html>
